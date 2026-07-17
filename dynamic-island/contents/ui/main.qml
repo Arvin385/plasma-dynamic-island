@@ -7,6 +7,7 @@ import org.kde.plasma.core 2.0 as PlasmaCore
 import org.kde.kirigami 2.20 as Kirigami
 import org.kde.plasma.private.mpris as Mpris
 import org.kde.taskmanager as TaskManager
+import org.kde.plasma.plasma5support as P5Support
 import QtQuick.Effects
 
 PlasmoidItem {
@@ -35,38 +36,146 @@ PlasmoidItem {
 
     property real animatedWidth: 200
     property real lastTargetWidth: -1
+    // Smoothed LLM pill suffix — avoids choppy width from tok/s flicker
+    property real pillLlmTps: 0
+    property string pillLlmPhase: "idle" // idle | processing
+    property string pillLlmModel: ""
+    // Staged text: grow expands first, then commits; shrink commits text first
+    property string visibleDisplayText: ""
+    property string pendingDisplayText: ""
+    property bool awaitingGrowCommit: false
 
-    // Normalized lowercase version of statusText
+    // v1.3 structured caches
+    property var sysData: ({})
+    property var mediaData: ({})
+    property var installData: ({})
+    property var llmData: ({})
+    property string userSticky: ""
+    property color accentGreen: "#3DDC97"
+
+    readonly property bool mediaModeActive: {
+        // Live MPRIS wins; paused/stopped leaves media mode until play resumes
+        var player = mprisModel.currentPlayer
+        if (player)
+            return player.playbackStatus === Mpris.PlaybackStatus.Playing
+        return !!(mediaData && mediaData.playing === true)
+    }
+    readonly property bool installModeActive: {
+        if (!installData || !installData.action || installData.action === "none") {
+            return isInstalling || isUninstalling || isInstalled || isUninstalled
+        }
+        var completedAt = Number(installData.completed_at || 0)
+        if (completedAt > 0) {
+            var now = Date.now() / 1000
+            return (now - completedAt) <= 5
+        }
+        return true
+    }
+    readonly property bool llmModeActive: !!(llmData && (llmData.model || llmData.loaded))
+
+    readonly property string defaultPriority: {
+        if (installModeActive) return "install"
+        if (mediaModeActive) return "media"
+        if (llmModeActive) return "llm"
+        return "idle"
+    }
+
+    readonly property string priorityMode: {
+        if (userSticky === "install" && installModeActive) return "install"
+        if (userSticky === "media" && mediaModeActive) return "media"
+        if (userSticky === "llm" && llmModeActive) return "llm"
+        if (userSticky === "system") return "system"
+        return defaultPriority
+    }
+
+    function setPriority(mode) { userSticky = mode }
+
+    function activateInstallTerminal() {
+        var term = Number((installData && installData.terminal_pid) || 0)
+        var pid = Number((installData && installData.pid) || 0)
+        var target = term > 0 ? term : pid
+        if (target > 0)
+            execSource.exec(homeDirectory + "/.local/bin/di-activate-pid.sh " + target)
+    }
+
+    P5Support.DataSource {
+        id: execSource
+        engine: "executable"
+        connectedSources: []
+        function exec(cmd) {
+            connectSource(cmd)
+        }
+        onNewData: function (sourceName) {
+            disconnectSource(sourceName)
+        }
+    }
+
+    // Normalized lowercase version of statusText (legacy fallback)
     property string cleanStatusText: statusText.toString().toLowerCase().trim()
 
-    // Enhanced content detection with modern symbols (case-insensitive)
-    property bool isInstalling: cleanStatusText.includes("installing") || cleanStatusText.includes("downloading") || statusText.includes("▼") || statusText.includes("●")
-    property bool isUninstalling: cleanStatusText.includes("uninstalling") || cleanStatusText.includes("removing") || statusText.includes("×")
-    property bool isInstalled: cleanStatusText.includes("installed") || cleanStatusText.includes("downloaded") || cleanStatusText.includes("✓") || cleanStatusText.includes("completed")
-    property bool isUninstalled: cleanStatusText.includes("uninstalled") || cleanStatusText.includes("removed")
+    // Prefer structured install JSON; fall back to legacy statusText symbols
+    readonly property string installAction: {
+        if (installData && installData.action && installData.action !== "none")
+            return String(installData.action).toLowerCase()
+        return ""
+    }
+
+    property bool isInstalling: {
+        if (installAction.indexOf("install") >= 0 && installAction.indexOf("installed") < 0)
+            return true
+        if (installAction.indexOf("download") >= 0)
+            return true
+        return cleanStatusText.includes("installing") || cleanStatusText.includes("downloading")
+            || statusText.includes("▼") || statusText.includes("●")
+    }
+    property bool isUninstalling: {
+        if (installAction.indexOf("remov") >= 0 || installAction.indexOf("uninstall") >= 0)
+            return true
+        return cleanStatusText.includes("uninstalling") || cleanStatusText.includes("removing")
+            || statusText.includes("×")
+    }
+    property bool isInstalled: {
+        if (installAction === "installed")
+            return true
+        return cleanStatusText.includes("installed") || cleanStatusText.includes("downloaded")
+            || cleanStatusText.includes("✓") || cleanStatusText.includes("completed")
+    }
+    property bool isUninstalled: {
+        if (installAction === "removed")
+            return true
+        return cleanStatusText.includes("uninstalled") || cleanStatusText.includes("removed")
+    }
 
     property bool isSystemActive: isInstalling || isUninstalling
     property bool isSystemCompleted: isInstalled || isUninstalled
 
-    property bool isMediaOnly: (mediaText !== "" || cleanStatusText.includes("♫") || cleanStatusText.includes("♪") || cleanStatusText.includes("now playing") || cleanStatusText.includes("spotify")) && !isSystemActive && !isSystemCompleted
+    // Visualizer only when the pill is actually showing media (not install/llm)
+    property bool isMediaOnly: mediaModeActive && priorityMode === "media"
+        && !isSystemActive && !isSystemCompleted
 
-    property bool hasMedia: mediaText !== ""
-    property bool hasStatus: statusText !== ""
-    property bool hasContent: hasMedia || hasStatus
-    property bool isDefaultState: !hasContent
+    property bool hasMedia: mediaModeActive && mediaText !== ""
+    property bool hasStatus: statusText !== "" || installModeActive || llmModeActive
+    property bool hasContent: hasMedia || hasStatus || installModeActive || llmModeActive
+        || priorityMode === "system"
+    property bool isDefaultState: priorityMode === "idle" && !hasMedia && !installModeActive && !llmModeActive
 
-    // Keep property deps explicit so width remeasures whenever content changes
-    readonly property string currentDisplayText: {
+    // Desired label (may wait for grow animation before becoming visible)
+    readonly property string desiredDisplayText: {
         var _status = statusText
         var _media = mediaText
-        var _installing = isInstalling
-        var _uninstalling = isUninstalling
-        var _installed = isInstalled
-        var _uninstalled = isUninstalled
-        var _hasMedia = hasMedia
-        var _hasStatus = hasStatus
+        var _prio = priorityMode
+        var _sys = sysData
+        var _md = mediaData
+        var _ins = installData
+        var _llm = llmData
+        var _playing = mediaModeActive
+        var _llmPhase = pillLlmPhase
+        var _llmTps = pillLlmTps
+        var _llmModel = pillLlmModel
         return getDisplayText()
     }
+    // Back-compat alias used by width metrics / older call sites
+    readonly property string currentDisplayText: desiredDisplayText
 
     // 0=default, 1=installing, 2=uninstalling, 3=installed, 4=uninstalled, 5=media
     property int currentState: {
@@ -74,7 +183,7 @@ PlasmoidItem {
         if (isUninstalling) return 2
         if (isInstalled) return 3
         if (isUninstalled) return 4
-        if (isMediaOnly || (hasMedia && !isSystemActive)) return 5
+        if (mediaModeActive && !isSystemActive) return 5
         return 0
     }
 
@@ -83,6 +192,10 @@ PlasmoidItem {
     property string homeDirectory: Platform.StandardPaths.writableLocation(Platform.StandardPaths.HomeLocation).toString().replace("file://", "")
     property string statusFile: homeDirectory + "/.cache/dynamic-island-status.txt"
     property string mediaFile: homeDirectory + "/.cache/dynamic-island-media.txt"
+    property string sysJsonFile: homeDirectory + "/.cache/dynamic-island-sys.json"
+    property string mediaJsonFile: homeDirectory + "/.cache/dynamic-island-media.json"
+    property string installJsonFile: homeDirectory + "/.cache/dynamic-island-install.json"
+    property string llmJsonFile: homeDirectory + "/.cache/dynamic-island-llm.json"
 
     // Show widget when there's content OR in default state
     visible: hasContent || isDefaultState
@@ -99,25 +212,81 @@ PlasmoidItem {
     width: animatedWidth
     height: fixedHeight
 
-    preferredRepresentation: fullRepresentation
+    // Panel shows the pill; hover opens fullRepresentation as a popup beyond the bar
+    preferredRepresentation: compactRepresentation
+    // Keep full rep in popup (never squeeze into panel)
+    switchWidth: 10000
+    switchHeight: 10000
+    activationTogglesExpanded: false
+    hideOnWindowDeactivate: false
+    // Transparent Plasma popup — floating cards provide their own color
+    Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
 
-    // Measure unconstrained text (same font as the label)
+    function openExpanded() {
+        collapseGraceTimer.stop()
+        expanded = true
+    }
+
+    function scheduleCollapse() {
+        collapseGraceTimer.restart()
+    }
+
+    function cancelCollapse() {
+        collapseGraceTimer.stop()
+    }
+
+    Timer {
+        id: collapseGraceTimer
+        interval: 400
+        repeat: false
+        onTriggered: root.expanded = false
+    }
+
+    readonly property int widthAnimMs: 520
+
+    Timer {
+        id: contentTransitionTimer
+        interval: 90
+        repeat: false
+        onTriggered: root.runContentTransition()
+    }
+
+    // After grow animation finishes, commit the new text
+    Timer {
+        id: growCommitTimer
+        interval: root.widthAnimMs
+        repeat: false
+        onTriggered: root.commitGrowText()
+    }
+
+    // Measure unconstrained text (same font as the label) — always the *desired* string
     TextMetrics {
         id: widthMetrics
-        text: root.currentDisplayText
+        text: root.desiredDisplayText
         font.family: root.uiFont
         font.pixelSize: 14
         font.weight: Font.Medium
         font.letterSpacing: 0.3
 
-        onWidthChanged: root.syncIslandWidth()
-        onTextChanged: root.syncIslandWidth()
+        onWidthChanged: root.scheduleContentTransition()
+        onTextChanged: root.scheduleContentTransition()
+    }
+
+    // Probe for stable LLM width (processing ↔ tok/s shouldn't resize the pill)
+    TextMetrics {
+        id: llmWidthProbe
+        font.family: root.uiFont
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        font.letterSpacing: 0.3
     }
 
     Behavior on animatedWidth {
+        id: widthBehavior
+        enabled: true
         NumberAnimation {
-            duration: 320
-            easing.type: Easing.OutCubic
+            duration: root.widthAnimMs
+            easing.type: Easing.InOutCubic
         }
     }
 
@@ -130,23 +299,122 @@ PlasmoidItem {
         return chrome
     }
 
-    function calculateTargetWidth() {
-        var textW = widthMetrics.width
+    function measureDisplayText(str) {
+        llmWidthProbe.text = str || ""
+        return llmWidthProbe.width
+    }
+
+    function widthForDisplayText(displayText) {
+        var textW = measureDisplayText(displayText)
+
+        if (priorityMode === "llm" && pillLlmModel) {
+            var base = pillLlmModel + " · "
+            var wProc = measureDisplayText(base + "processing")
+            var wTok = measureDisplayText(base + "999.9 tok/s")
+            var wIdle = measureDisplayText(base + "idle")
+            if (pillLlmPhase === "idle")
+                textW = Math.max(textW, wIdle)
+            else
+                textW = Math.max(textW, wProc, wTok)
+        }
+
         if (textW <= 0)
             return isDefaultState ? 200 : minWidth
 
-        // Small comfort inset so glyphs aren't flush against the pill edges
         var comfort = isDefaultState ? 28 : 12
         var total = textW + islandChromeWidth() + comfort
         return Math.round(Math.min(Math.max(total, minWidth), maxWidth))
     }
 
-    function syncIslandWidth() {
-        var target = calculateTargetWidth()
-        if (Math.abs(target - lastTargetWidth) < 0.5)
+    function calculateTargetWidth() {
+        return widthForDisplayText(desiredDisplayText)
+    }
+
+    function scheduleContentTransition() {
+        if (!contentTransitionTimer)
+            return
+        contentTransitionTimer.restart()
+    }
+
+    function scheduleIslandWidthSync() {
+        scheduleContentTransition()
+    }
+
+    function commitVisibleText(text) {
+        if (visibleDisplayText === text)
+            return
+        visibleDisplayText = text
+    }
+
+    function commitGrowText() {
+        if (!awaitingGrowCommit)
+            return
+        awaitingGrowCommit = false
+        commitVisibleText(pendingDisplayText)
+    }
+
+    function runContentTransition() {
+        var next = desiredDisplayText
+        pendingDisplayText = next
+        var target = widthForDisplayText(next)
+
+        var grow = target > animatedWidth + 12
+        var shrink = target < animatedWidth - 12
+
+        if (grow) {
+            // Expand first, keep old text until width lands
+            awaitingGrowCommit = true
+            lastTargetWidth = target
+            animatedWidth = target
+            if (growCommitTimer)
+                growCommitTimer.restart()
+            return
+        }
+
+        // Shrink or same-size: text first, then width (shrink path you like)
+        awaitingGrowCommit = false
+        if (growCommitTimer)
+            growCommitTimer.stop()
+        commitVisibleText(next)
+
+        if (!shrink && Math.abs(target - lastTargetWidth) < 12 && Math.abs(target - animatedWidth) < 12)
             return
         lastTargetWidth = target
         animatedWidth = target
+    }
+
+    function applyIslandWidth() {
+        runContentTransition()
+    }
+
+    function syncIslandWidth() { scheduleContentTransition() }
+
+    function updatePillLlmDisplay(o) {
+        if (!o) {
+            pillLlmModel = ""
+            pillLlmPhase = "idle"
+            pillLlmTps = 0
+            return
+        }
+        var model = String(o.model || "")
+        var phase = String(o.phase || "idle")
+        var tps = Number(o.tokens_per_second || 0)
+        pillLlmModel = model
+
+        if (phase === "idle") {
+            pillLlmPhase = "idle"
+            pillLlmTps = 0
+            return
+        }
+
+        pillLlmPhase = "processing"
+        // Only move the displayed rate when it changes meaningfully
+        if (tps > 0) {
+            if (pillLlmTps <= 0 || Math.abs(tps - pillLlmTps) >= 1.5)
+                pillLlmTps = Math.round(tps * 10) / 10
+        } else {
+            pillLlmTps = 0
+        }
     }
 
     // Aliases used by older call sites
@@ -155,17 +423,20 @@ PlasmoidItem {
     function applyMeasuredTextWidth(textWidth) { syncIslandWidth() }
 
     onStatusTextChanged: {
-        syncIslandWidth()
+        scheduleContentTransition()
         if (isInstalled || isUninstalled)
             autoHideTimer.restart()
         else
             autoHideTimer.stop()
     }
-    onMediaTextChanged: syncIslandWidth()
-    onShowSystemInfoChanged: syncIslandWidth()
-    onIsMediaOnlyChanged: syncIslandWidth()
-    onIsDefaultStateChanged: syncIslandWidth()
-    onCurrentDisplayTextChanged: syncIslandWidth()
+    onMediaTextChanged: scheduleContentTransition()
+    onShowSystemInfoChanged: scheduleContentTransition()
+    onIsMediaOnlyChanged: scheduleContentTransition()
+    onIsDefaultStateChanged: scheduleContentTransition()
+    onDesiredDisplayTextChanged: scheduleContentTransition()
+    onPriorityModeChanged: scheduleContentTransition()
+    onPillLlmPhaseChanged: scheduleContentTransition()
+    onPillLlmTpsChanged: scheduleContentTransition()
 
     // System info timer
     Timer {
@@ -192,12 +463,13 @@ PlasmoidItem {
     // Single file poller for status + media-cache fallback
     Timer {
         id: filePoller
-        interval: 250
+        interval: 150
         running: true
         repeat: true
         onTriggered: {
             readStatusFile()
             readMediaFile()
+            readJsonCaches()
         }
     }
 
@@ -247,13 +519,28 @@ PlasmoidItem {
 
     function syncMprisPlayer() {
         var player = mprisModel.currentPlayer
-        if (!player || player.playbackStatus !== Mpris.PlaybackStatus.Playing) {
+        if (!player) {
             if (activePlayer !== "") {
                 activePlayer = ""
                 playerIdentity = ""
                 playerPid = 0
                 mediaText = ""
             }
+            return
+        }
+
+        // Paused / stopped → leave media mode until playback resumes
+        if (player.playbackStatus !== Mpris.PlaybackStatus.Playing) {
+            if (activePlayer !== "" || mediaText !== "") {
+                activePlayer = ""
+                playerIdentity = ""
+                playerPid = 0
+                mediaText = ""
+            }
+            if (mediaData && mediaData.playing === true)
+                mediaData = Object.assign({}, mediaData, { playing: false })
+            if (userSticky === "media")
+                userSticky = ""
             return
         }
 
@@ -269,6 +556,88 @@ PlasmoidItem {
         var formattedInfo = formatMediaText(mediaInfo)
         if (formattedInfo !== mediaText)
             mediaText = formattedInfo
+    }
+
+    function activateSystemMonitor() {
+        // Open default terminal running htop, else top
+        var cmd = "bash -lc '" +
+            "MON=$(command -v htop || command -v top); " +
+            "if command -v konsole >/dev/null; then konsole -e $MON; " +
+            "elif command -v kitty >/dev/null; then kitty -e $MON; " +
+            "elif command -v alacritty >/dev/null; then alacritty -e $MON; " +
+            "elif command -v ghostty >/dev/null; then ghostty -e $MON; " +
+            "elif command -v foot >/dev/null; then foot $MON; " +
+            "elif command -v xdg-terminal-exec >/dev/null; then xdg-terminal-exec $MON; " +
+            "else $MON; fi'"
+        execSource.exec(cmd)
+    }
+
+    function raiseTaskMatching(needles) {
+        var i, j, idx, hay, name, appId, desk
+        for (i = 0; i < tasksModel.count; i++) {
+            idx = tasksModel.index(i, 0)
+            if (!tasksModel.data(idx, TaskManager.AbstractTasksModel.IsWindow))
+                continue
+            name = (tasksModel.data(idx, Qt.DisplayRole)
+                || tasksModel.data(idx, TaskManager.AbstractTasksModel.AppName)
+                || "").toString().toLowerCase()
+            appId = (tasksModel.data(idx, TaskManager.AbstractTasksModel.AppId) || "").toString().toLowerCase()
+            desk = (tasksModel.data(idx, TaskManager.AbstractTasksModel.LauncherUrlWithoutIcon)
+                || "").toString().toLowerCase()
+            hay = name + " " + appId + " " + desk
+            for (j = 0; j < needles.length; j++) {
+                if (hay.indexOf(needles[j]) >= 0) {
+                    tasksModel.requestActivate(idx)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    function activateLlmRunner() {
+        var runner = String((llmData && llmData.runner) || "").toLowerCase()
+        var activate = homeDirectory + "/.local/bin/di-activate-pid.sh"
+
+        if (runner === "ollama") {
+            if (raiseTaskMatching(["ollama"]))
+                return
+            var ollamaCmd = "bash -lc '" +
+                "PID=$(pgrep -x ollama | head -1); " +
+                "if [ -n \"$PID\" ] && [ -x \"" + activate + "\" ]; then \"" + activate + "\" \"$PID\"; fi; " +
+                "DESK=$(find \"$HOME\"/.local/share/applications /usr/share/applications " +
+                "  -iname \"*ollama*.desktop\" 2>/dev/null | head -1); " +
+                "if [ -n \"$DESK\" ]; then " +
+                "  if command -v gtk-launch >/dev/null; then gtk-launch \"$(basename \"$DESK\" .desktop)\"; " +
+                "  else gio launch \"$DESK\" 2>/dev/null || xdg-open \"$DESK\"; fi; " +
+                "  exit 0; fi; " +
+                "if command -v ollama >/dev/null; then " +
+                "  if command -v konsole >/dev/null; then konsole -e ollama list; " +
+                "  elif command -v kitty >/dev/null; then kitty -e ollama list; " +
+                "  else ollama list; fi; fi'"
+            execSource.exec(ollamaCmd)
+            return
+        }
+
+        // Default / lmstudio
+        if (raiseTaskMatching(["lm studio", "lm-studio", "lmstudio"]))
+            return
+        var lmsCmd = "bash -lc '" +
+            "PID=$(pgrep -f \"LM-Studio|lmstudio\" 2>/dev/null | head -1); " +
+            "if [ -n \"$PID\" ] && [ -x \"" + activate + "\" ]; then \"" + activate + "\" \"$PID\"; exit 0; fi; " +
+            "DESK=$(find \"$HOME\"/.local/share/applications /usr/share/applications " +
+            "  -iname \"*lm*studio*.desktop\" 2>/dev/null | head -1); " +
+            "if [ -n \"$DESK\" ]; then " +
+            "  if command -v gtk-launch >/dev/null; then gtk-launch \"$(basename \"$DESK\" .desktop)\"; " +
+            "  else gio launch \"$DESK\" 2>/dev/null || xdg-open \"$DESK\"; fi; " +
+            "  exit 0; fi; " +
+            "APP=$(find \"$HOME\"/Desktop \"$HOME\"/.local/bin \"$HOME\"/Applications /opt " +
+            "  -maxdepth 2 \\( -iname \"LM*Studio*.AppImage\" -o -iname \"lm-studio*.AppImage\" \\) " +
+            "  2>/dev/null | head -1); " +
+            "if [ -n \"$APP\" ]; then nohup \"$APP\" >/dev/null 2>&1 & exit 0; fi; " +
+            "command -v notify-send >/dev/null && notify-send \"Dynamic Island\" " +
+            "  \"Open LM Studio from your application menu\" || true'"
+        execSource.exec(lmsCmd)
     }
 
     function isGenericBrowserLabel(label) {
@@ -493,6 +862,14 @@ PlasmoidItem {
         function onDesktopEntryChanged() { syncMprisPlayer() }
     }
 
+    // Backup poll — nested MPRIS property signals are easy to miss
+    Timer {
+        interval: 200
+        running: true
+        repeat: true
+        onTriggered: syncMprisPlayer()
+    }
+
 
     /// Apple-Quality Dynamic Island Visual Shell
     /// Enhanced for luxury, precision, depth, and animation
@@ -508,10 +885,18 @@ PlasmoidItem {
         running: true
     }
 
-    fullRepresentation: Item {
+    compactRepresentation: Item {
         id: mainContainer
-        width: root.Layout.preferredWidth
-        height: root.Layout.preferredHeight
+        Layout.fillWidth: false
+        Layout.fillHeight: false
+        Layout.preferredWidth: root.animatedWidth
+        Layout.preferredHeight: root.fixedHeight
+        Layout.minimumWidth: root.minWidth
+        Layout.maximumWidth: root.maxWidth
+        Layout.minimumHeight: root.fixedHeight
+        Layout.maximumHeight: root.fixedHeight
+        width: root.animatedWidth
+        height: root.fixedHeight
 
         // Rectangle {
         //     id: shadowBackground
@@ -538,12 +923,22 @@ PlasmoidItem {
             clip: true
 
             property color dominantColor: {
+                if (root.priorityMode === "install") {
+                    var a = String((root.installData && root.installData.action) || "")
+                    if (a.indexOf("remov") >= 0 || a.indexOf("uninstall") >= 0)
+                        return Qt.rgba(0.75, 0.25, 0.15, 1.0)
+                    if (a.indexOf("installed") >= 0 || a.indexOf("removed") >= 0)
+                        return Qt.rgba(0.15, 0.55, 0.25, 1.0)
+                    return Qt.rgba(0.12, 0.35, 0.65, 1.0)
+                }
+                if (root.priorityMode === "media") return Qt.rgba(0.4, 0.2, 0.5, 1.0)
+                if (root.priorityMode === "llm") return Qt.rgba(0.15, 0.35, 0.4, 1.0)
                 if (isInstalling) return Qt.rgba(0.12, 0.35, 0.65, 1.0)
-                    if (isUninstalling) return Qt.rgba(0.75, 0.25, 0.15, 1.0)
-                        if (isInstalled) return Qt.rgba(0.15, 0.55, 0.25, 1.0)
-                            if (isUninstalled) return Qt.rgba(0.6, 0.45, 0.15, 1.0)
-                                if (isMediaOnly) return Qt.rgba(0.4, 0.2, 0.5, 1.0)
-                                    return Qt.rgba(0.08, 0.08, 0.08, 1.0)
+                if (isUninstalling) return Qt.rgba(0.75, 0.25, 0.15, 1.0)
+                if (isInstalled) return Qt.rgba(0.15, 0.55, 0.25, 1.0)
+                if (isUninstalled) return Qt.rgba(0.6, 0.45, 0.15, 1.0)
+                if (isMediaOnly) return Qt.rgba(0.4, 0.2, 0.5, 1.0)
+                return Qt.rgba(0.08, 0.08, 0.08, 1.0)
             }
 
             border.color: Qt.darker(Qt.lighter(dominantColor, 1.2), 1.2)
@@ -576,20 +971,23 @@ PlasmoidItem {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
 
-                onEntered: background.hovered = true
-                onExited: background.hovered = false
-
-
-
-                onClicked: {
-                    if (currentState === 5) {
-                        console.log("Media mode. Player:", activePlayer)
-                        activateMediaPlayer()
-                    }
+                onEntered: {
+                    background.hovered = true
+                    root.openExpanded()
+                }
+                onExited: {
+                    background.hovered = false
+                    root.scheduleCollapse()
                 }
 
-
-
+                onClicked: {
+                    if (root.priorityMode === "install")
+                        root.activateInstallTerminal()
+                    else if (root.priorityMode === "media")
+                        root.activateMediaPlayer()
+                    else if (root.priorityMode === "system" || root.priorityMode === "idle")
+                        root.activateSystemMonitor()
+                }
             }
         }
 
@@ -865,76 +1263,83 @@ PlasmoidItem {
             }
         }
 
-        // Modern geometric progress indicator
-        Rectangle {
-            id: progressIndicator
-            anchors.left: parent.left
-            anchors.bottom: parent.bottom
-            anchors.margins: 3
-            height: 2
-            width: 0
-            color: {
-                if (isInstalling) return "#4A90E2"
-                    if (isUninstalling) return "#E24A4A"
-                        return "#4A90E2"
-            }
-            opacity: 0
-            z: 2
+        // Install/uninstall progress — inset track + sliding thumb (stays inside pill caps)
+        Item {
+            id: progressTrack
+            anchors.left: background.left
+            anchors.right: background.right
+            anchors.bottom: background.bottom
+            // Inset past the stadium end-caps so the bar never bleeds out the sides
+            anchors.leftMargin: Math.max(background.height * 0.5, 18)
+            anchors.rightMargin: Math.max(background.height * 0.5, 18)
+            anchors.bottomMargin: 6
+            height: 3
+            z: 4
+            visible: opacity > 0.01
+            opacity: (isInstalling || isUninstalling) ? 1 : 0
+            clip: true
 
-            // Gradient overlay for depth
+            Behavior on opacity {
+                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            }
+
+            readonly property bool removing: {
+                if (isUninstalling) return true
+                var a = String((root.installData && root.installData.action) || "")
+                return a.indexOf("remov") >= 0 || a.indexOf("uninstall") >= 0
+            }
+            readonly property color accent: removing ? "#FF6B6B" : "#5BB0FF"
+            // 0 → 1 travel fraction (x is derived so resize never overflows)
+            property real sweep: 0
+
+            // Subtle track
             Rectangle {
                 anchors.fill: parent
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 0.5; color: progressIndicator.color }
-                    GradientStop { position: 1.0; color: "transparent" }
+                radius: height / 2
+                color: Qt.rgba(1, 1, 1, 0.14)
+            }
+
+            // Sliding thumb — travels within the track, never grows past edges
+            Rectangle {
+                id: progressThumb
+                width: Math.max(28, parent.width * 0.32)
+                height: parent.height
+                radius: height / 2
+                y: 0
+                x: progressTrack.sweep * Math.max(0, parent.width - width)
+                color: progressTrack.accent
+                opacity: 0.95
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.35) }
+                        GradientStop { position: 0.45; color: "transparent" }
+                        GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.15) }
+                    }
                 }
             }
 
-            states: [
-                State {
-                    name: "active"
-                    when: isInstalling || isUninstalling
-                    PropertyChanges { target: progressIndicator; opacity: 1.0 }
-                },
-                State {
-                    name: "inactive"
-                    when: !isInstalling && !isUninstalling
-                    PropertyChanges { target: progressIndicator; opacity: 0; width: 0 }
-                }
-            ]
-
-            transitions: [
-                Transition {
-                    to: "active"
-                    NumberAnimation { properties: "opacity"; duration: 300; easing.type: Easing.OutCubic }
-                },
-                Transition {
-                    to: "inactive"
-                    NumberAnimation { properties: "opacity,width"; duration: 500; easing.type: Easing.InCubic }
-                }
-            ]
-
             SequentialAnimation {
-                running: isInstalling || isUninstalling
+                running: progressTrack.opacity > 0.5
                 loops: Animation.Infinite
                 NumberAnimation {
-                    target: progressIndicator
-                    property: "width"
-                    from: parent.width * 0.1
-                    to: parent.width * 0.9
-                    duration: 2000
-                    easing.type: Easing.InOutCubic
+                    target: progressTrack
+                    property: "sweep"
+                    from: 0
+                    to: 1
+                    duration: 1100
+                    easing.type: Easing.InOutSine
                 }
-                PauseAnimation { duration: 200 }
                 NumberAnimation {
-                    target: progressIndicator
-                    property: "width"
-                    from: parent.width * 0.9
-                    to: parent.width * 0.1
-                    duration: 2000
-                    easing.type: Easing.InOutCubic
+                    target: progressTrack
+                    property: "sweep"
+                    from: 1
+                    to: 0
+                    duration: 1100
+                    easing.type: Easing.InOutSine
                 }
             }
         }
@@ -1010,7 +1415,7 @@ PlasmoidItem {
 
             Text {
                 id: textDisplay
-                text: root.currentDisplayText
+                text: root.visibleDisplayText
                 elide: Text.ElideRight
                 wrapMode: Text.NoWrap
                 maximumLineCount: 1
@@ -1116,11 +1521,11 @@ PlasmoidItem {
             }
         }
 
-        // Smooth width transition
+        // Smooth width transition (match root animatedWidth easing)
         Behavior on width {
             NumberAnimation {
-                duration: 400;
-                easing.type: Easing.OutCubic
+                duration: 520
+                easing.type: Easing.InOutCubic
             }
         }
 
@@ -1128,6 +1533,33 @@ PlasmoidItem {
 
         Behavior on scale {
             NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+        }
+    }
+
+    // Popup must grow to fit every active card (dense layout + tall preferred height)
+    fullRepresentation: Item {
+        id: expandedContainer
+
+        readonly property int contentH: Math.max(expandedView.implicitHeight + 10, 160)
+
+        implicitWidth: 420
+        implicitHeight: contentH
+        Layout.minimumWidth: 400
+        Layout.preferredWidth: 420
+        Layout.maximumWidth: 480
+        Layout.minimumHeight: contentH
+        Layout.preferredHeight: contentH
+        Layout.maximumHeight: 2400
+
+        width: 420
+        height: contentH
+
+        ExpandedView {
+            id: expandedView
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            islandRoot: root
         }
     }
 
@@ -1163,9 +1595,16 @@ PlasmoidItem {
     }
 
     function readMediaFile() {
-        // Cache is fallback only — do not clobber live MPRIS
+        // Cache is fallback only — never resurrect paused/stopped media
         if (activePlayer !== "")
             return
+        if (mprisModel.currentPlayer)
+            return
+        if (mediaData && mediaData.playing !== true) {
+            if (mediaText !== "")
+                mediaText = ""
+            return
+        }
 
         var xhr = new XMLHttpRequest()
         xhr.open('GET', 'file://' + mediaFile, true)
@@ -1173,39 +1612,120 @@ PlasmoidItem {
             if (xhr.readyState === 4) {
                 if (xhr.status === 200 || xhr.status === 0) {
                     var content = xhr.responseText.trim()
-                    if (content !== mediaText) {
-                        mediaText = content
+                    if (!content) {
+                        if (mediaText !== "")
+                            mediaText = ""
+                        return
                     }
+                    if (content !== mediaText)
+                        mediaText = content
                 }
             }
         }
         xhr.send()
     }
 
-    // Enhanced display logic with better prioritization
+    // Enhanced display logic with priority-mode pill content
     function getDisplayText() {
-        // Priority 1: Active system operations
-        if (isInstalling || isUninstalling) {
-            return formatStatusText(statusText)
+        var mode = priorityMode
+        if (mode === "install") {
+            var a = (installData && installData.action) ? String(installData.action) : ""
+            var pkg = (installData && installData.package) ? String(installData.package) : ""
+            if (!pkg && statusText)
+                return formatStatusText(statusText)
+            if (a.indexOf("install") >= 0 && a.indexOf("installed") < 0)
+                return "INSTALLING " + pkg.toUpperCase() + " ▼"
+            if (a.indexOf("remov") >= 0 || a.indexOf("uninstall") >= 0)
+                return "REMOVING " + pkg.toUpperCase() + " ×"
+            if (a.indexOf("installed") >= 0)
+                return pkg.toUpperCase() + " INSTALLED ✓"
+            if (a.indexOf("removed") >= 0)
+                return pkg.toUpperCase() + " REMOVED"
+            return (pkg || a || "PACKAGE").toUpperCase()
         }
-
-        // Priority 2: Recently completed operations
-        if (isInstalled || isUninstalled) {
-            return formatStatusText(statusText)
+        if (mode === "media") {
+            var t = (mediaData && mediaData.title) ? String(mediaData.title) : mediaText
+            var ar = (mediaData && mediaData.artist) ? String(mediaData.artist) : ""
+            if (t && ar) return "♫ " + t + " — " + ar
+            if (t) return formatMediaText(t)
+            return "♫ Media"
         }
-
-        // Priority 3: Media content
-        if (hasMedia && !hasStatus) {
-            return formatMediaText(mediaText)
+        if (mode === "llm") {
+            var model = pillLlmModel || ((llmData && llmData.model) ? String(llmData.model) : "LLM")
+            if (pillLlmPhase === "idle")
+                return model + " · idle"
+            if (pillLlmTps > 0)
+                return model + " · " + pillLlmTps.toFixed(1) + " tok/s"
+            return model + " · processing"
         }
-
-        // Priority 4: Other status
-        if (hasStatus) {
-            return formatStatusText(statusText)
+        // Idle: greeting on the pill. System metrics only when hovered (or System prioritized).
+        if (mode === "system" && userSticky === "system") {
+            var cpu = Math.round(Number((sysData && sysData.cpu) || systemLoad * 100 || 0))
+            var ram = Math.round(Number((sysData && sysData.ram) || 0))
+            var gpus = (sysData && sysData.gpus) ? sysData.gpus : []
+            var gpuTxt = ""
+            if (gpus && gpus.length) {
+                for (var i = 0; i < gpus.length; ++i) {
+                    if (i) gpuTxt += " "
+                    gpuTxt += "GPU" + i + " " + Math.round(Number(gpus[i].util || 0)) + "%"
+                }
+            } else {
+                gpuTxt = "GPU —"
+            }
+            return "CPU " + cpu + "% · RAM " + ram + "% · " + gpuTxt
         }
-
-        // Default idle greeting
         return idleGreeting
+    }
+
+    function readJsonFile(path, assignFn) {
+        var xhr = new XMLHttpRequest()
+        xhr.open("GET", "file://" + path, true)
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4)
+                return
+            if (!(xhr.status === 200 || xhr.status === 0))
+                return
+            var raw = (xhr.responseText || "").trim()
+            if (!raw)
+                return
+            try {
+                assignFn(JSON.parse(raw))
+            } catch (e) { }
+        }
+        xhr.send()
+    }
+
+    function readJsonCaches() {
+        readJsonFile(sysJsonFile, function (o) { sysData = o })
+        readJsonFile(mediaJsonFile, function (o) {
+            // Do not let stale cache flip playing=true over a live paused MPRIS player
+            var live = mprisModel.currentPlayer
+            if (live && live.playbackStatus !== Mpris.PlaybackStatus.Playing && o)
+                o = Object.assign({}, o, { playing: false })
+            mediaData = o
+            // Only feed pill from cache while actively playing and MPRIS quiet
+            if (o && o.playing && o.title && activePlayer === "" && !live)
+                mediaText = o.title + (o.artist ? (" - " + o.artist) : "")
+            if (!o || !o.playing) {
+                if (activePlayer === "" && mediaText !== "")
+                    mediaText = ""
+                if (userSticky === "media")
+                    userSticky = ""
+            }
+        })
+        readJsonFile(installJsonFile, function (o) {
+            installData = o
+            if (userSticky === "install" && !installModeActive)
+                userSticky = ""
+        })
+        readJsonFile(llmJsonFile, function (o) {
+            llmData = o
+            updatePillLlmDisplay(o)
+            if (userSticky === "llm" && !llmModeActive)
+                userSticky = ""
+        })
+        if (userSticky === "media" && !mediaModeActive)
+            userSticky = ""
     }
 
 
@@ -1316,6 +1836,11 @@ PlasmoidItem {
          syncMprisPlayer()
          updateSystemInfo()
          currentTime = new Date().toLocaleTimeString(Qt.locale(), "hh:mm")
+
+         visibleDisplayText = desiredDisplayText
+         pendingDisplayText = desiredDisplayText
+         lastTargetWidth = widthForDisplayText(desiredDisplayText)
+         animatedWidth = lastTargetWidth
          updateAnimatedWidth()
      }
 

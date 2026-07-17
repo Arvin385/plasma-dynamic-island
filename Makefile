@@ -1,72 +1,65 @@
-# Plasma Dynamic Island — install helpers
-#
-# Usage:
-#   make install
-#   make install INSTALL_DIR=/custom/path/com.arvin.dynamicisland
-#   make uninstall
-#
-# After editing QML/scripts, run `make install` then reload Plasma if needed:
-#   plasmashell --replace &
+# Dynamic Island — panel plasmoid + headless collector
+PREFIX      ?= $(HOME)/.local
+PLUGIN_ID   ?= com.arvin.dynamicisland
+SRC         := dynamic-island
+SHARE_DIR   ?= $(PREFIX)/share/plasma-dynamic-island
+BIN_DIR     ?= $(PREFIX)/bin
 
-PREFIX            ?= $(HOME)/.local
-PLASMOID_DIR      ?= $(PREFIX)/share/plasma/plasmoids
-PLUGIN_ID         ?= com.arvin.dynamicisland
+.PHONY: install uninstall plasma check
 
-# Full destination for the applet package (override this to change install location)
-INSTALL_DIR       ?= $(PLASMOID_DIR)/$(PLUGIN_ID)
+check:
+	@command -v kpackagetool6 >/dev/null || { \
+		echo "error: kpackagetool6 not found. On Arch/Manjaro install plasma-workspace / plasma-desktop."; \
+		exit 1; \
+	}
+	@command -v python3 >/dev/null || { \
+		echo "error: python3 not found. On Arch/Manjaro: pacman -S python"; \
+		exit 1; \
+	}
+	@command -v plasmashell >/dev/null || { \
+		echo "error: plasmashell not found. Install KDE Plasma 6 first."; \
+		exit 1; \
+	}
+	@echo "Dependencies OK (kpackagetool6, python3, plasmashell)"
 
-# Optional companion scripts (monitor daemon, etc.)
-SCRIPTS_INSTALL_DIR ?= $(PREFIX)/share/plasma-dynamic-island/scripts
-
-SRC_PLASMOID      := dynamic-island
-SRC_SCRIPTS       := scripts
-
-.PHONY: help install install-plasmoid install-scripts uninstall print-paths plasma
-
-help:
-	@echo "Plasma Dynamic Island"
-	@echo ""
-	@echo "Targets:"
-	@echo "  make install           Install plasmoid + scripts"
-	@echo "  make install-plasmoid  Install applet only"
-	@echo "  make install-scripts   Install scripts only"
-	@echo "  make uninstall         Remove installed plasmoid + scripts"
-	@echo "  make plasma            Restart plasmashell (plasmashell --replace)"
-	@echo "  make print-paths       Show resolved install paths"
-	@echo ""
-	@echo "Configurable variables (override on the command line):"
-	@echo "  PREFIX=$(PREFIX)"
-	@echo "  PLASMOID_DIR=$(PLASMOID_DIR)"
-	@echo "  PLUGIN_ID=$(PLUGIN_ID)"
-	@echo "  INSTALL_DIR=$(INSTALL_DIR)"
-	@echo "  SCRIPTS_INSTALL_DIR=$(SCRIPTS_INSTALL_DIR)"
-
-print-paths:
-	@echo "INSTALL_DIR=$(INSTALL_DIR)"
-	@echo "SCRIPTS_INSTALL_DIR=$(SCRIPTS_INSTALL_DIR)"
-
-install: install-plasmoid install-scripts
-
-install-plasmoid:
-	@test -f "$(SRC_PLASMOID)/metadata.json" || { echo "Missing $(SRC_PLASMOID)/metadata.json"; exit 1; }
-	@test -f "$(SRC_PLASMOID)/contents/ui/main.qml" || { echo "Missing $(SRC_PLASMOID)/contents/ui/main.qml"; exit 1; }
-	mkdir -p "$(INSTALL_DIR)"
-	cp -a "$(SRC_PLASMOID)/." "$(INSTALL_DIR)/"
-	@echo "Installed plasmoid → $(INSTALL_DIR)"
-
-install-scripts:
-	@test -d "$(SRC_SCRIPTS)" || { echo "Missing $(SRC_SCRIPTS)/"; exit 1; }
-	mkdir -p "$(SCRIPTS_INSTALL_DIR)"
-	cp -a "$(SRC_SCRIPTS)/." "$(SCRIPTS_INSTALL_DIR)/"
-	find "$(SCRIPTS_INSTALL_DIR)" -type f -name '*.sh' -exec chmod +x {} \;
-	@echo "Installed scripts  → $(SCRIPTS_INSTALL_DIR)"
+install: check
+	@if kpackagetool6 -t Plasma/Applet -l 2>/dev/null | grep -qx '$(PLUGIN_ID)'; then \
+		kpackagetool6 -t Plasma/Applet -u "$(CURDIR)/$(SRC)"; \
+	else \
+		kpackagetool6 -t Plasma/Applet -i "$(CURDIR)/$(SRC)"; \
+	fi
+	mkdir -p "$(SHARE_DIR)/scripts" "$(BIN_DIR)" "$(HOME)/.config/autostart"
+	# v1.3 collector only — do not ship legacy di-pacman-monitor.sh
+	install -m 755 scripts/di-v13-collector.sh "$(SHARE_DIR)/scripts/di-v13-collector.sh"
+	install -m 755 scripts/di-activate-pid.sh "$(BIN_DIR)/di-activate-pid.sh"
+	install -m 644 data/plasma-dynamic-island-autostart.desktop \
+		"$(HOME)/.config/autostart/plasma-dynamic-island-collector.desktop"
+	@# Kill existing collectors via pidfile / exact argv (avoid pkill -f matching this shell)
+	@if [ -f "$(SHARE_DIR)/collector.pid" ]; then \
+		kill "$$(cat "$(SHARE_DIR)/collector.pid")" 2>/dev/null || true; \
+		rm -f "$(SHARE_DIR)/collector.pid"; \
+	fi
+	@ps -eo pid=,args= | awk '/\/plasma-dynamic-island\/scripts\/di-v13-collector\.sh($$| )/ {print $$1}' | while read -r pid; do kill "$$pid" 2>/dev/null || true; done
+	@sleep 0.2
+	@nohup "$(SHARE_DIR)/scripts/di-v13-collector.sh" >/tmp/di-v13-collector.log 2>&1 </dev/null & echo $$! > "$(SHARE_DIR)/collector.pid"
+	@# Soft reload — do not fail install if plasmashell replace is denied
+	@plasmashell --replace >/dev/null 2>&1 </dev/null & \
+		echo "Installed $(PLUGIN_ID)"; \
+		echo ""; \
+		echo "Add to panel: right-click panel → Add Widgets → search \"Dynamic Island\""; \
+		echo "Collector log: /tmp/di-v13-collector.log"; \
+		echo "Autostart: ~/.config/autostart/plasma-dynamic-island-collector.desktop"
 
 uninstall:
-	rm -rf "$(INSTALL_DIR)"
-	rm -rf "$(SCRIPTS_INSTALL_DIR)"
-	@echo "Removed $(INSTALL_DIR)"
-	@echo "Removed $(SCRIPTS_INSTALL_DIR)"
+	@command -v kpackagetool6 >/dev/null && kpackagetool6 -t Plasma/Applet -r "$(PLUGIN_ID)" 2>/dev/null || true
+	@if [ -f "$(SHARE_DIR)/collector.pid" ]; then kill "$$(cat "$(SHARE_DIR)/collector.pid")" 2>/dev/null || true; fi
+	@ps -eo pid=,args= | awk '/\/plasma-dynamic-island\/scripts\/di-v13-collector\.sh($$| )/ {print $$1}' | while read -r pid; do kill "$$pid" 2>/dev/null || true; done
+	rm -rf "$(SHARE_DIR)"
+	rm -f "$(BIN_DIR)/di-activate-pid.sh"
+	rm -f "$(HOME)/.config/autostart/plasma-dynamic-island-collector.desktop"
+	@plasmashell --replace >/dev/null 2>&1 </dev/null & \
+		echo "Removed $(PLUGIN_ID), collector scripts, and autostart entry"
 
 plasma:
-	@echo "Restarting plasmashell in background..."
-	@plasmashell --replace >/dev/null 2>&1 & echo "plasmashell --replace started (pid $$!)"
+	@plasmashell --replace >/dev/null 2>&1 </dev/null &
+	@echo "plasmashell reload requested"

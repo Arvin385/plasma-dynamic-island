@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma Dynamic Island Collector
+Comment=Start Dynamic Island data collector for the panel plasmoid
+Exec=sh -c 'pidfile="$HOME/.local/share/plasma-dynamic-island/collector.pid"; if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then exit 0; fi; nohup "$HOME/.local/share/plasma-dynamic-island/scripts/di-v13-collector.sh" >/tmp/di-v13-collector.log 2>&1 </dev/null & echo $! > "$pidfile"'
+Icon=preferences-system-monitor
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+Hidden=false

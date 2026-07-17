@@ -1,121 +1,147 @@
 # Plasma Dynamic Island
 
-A KDE Plasma 6 panel widget inspired by Apple’s Dynamic Island. It shows media playback and system activity (package installs, etc.) in a compact animated pill.
+A Dynamic Island for the **KDE Plasma 6** panel. One small widget sits in your bar and shows whatever is happening right now — a download, a song, a local AI model, your system load. Hover it to open a stack of cards. Click a card to jump straight to that thing.
 
-Built for personal use on **KDE Plasma 6 + Wayland** (Manjaro/Arch). Other setups may need tweaks.
+version plasma license
 
-## Features
+> Works on Wayland, built and tested on Arch / Manjaro with Plasma 6.
 
-- Live media display via Plasma MPRIS (`org.kde.plasma.private.mpris`)
-- Click the island to raise / minimize the playing app (including Brave/Chrome PWAs)
-- System activity from a bash monitor (pacman, pip, npm, flatpak, updates)
-- Smooth width animation that fits the current text (clamped to a max width)
-- Media visualizer bars, status colors, and pulse on changes
+---
 
-## Project layout
+## The idea
 
+The widget is a compact label in your panel that changes with what you're doing:
+
+
+| You're...                        | It shows                              |
+| -------------------------------- | ------------------------------------- |
+| Installing or removing a package | Package name + a progress bar         |
+| Playing music or video           | Track, source, and output device      |
+| Running a local model            | Model name and live generation speed  |
+| Doing nothing special            | A greeting; hover for CPU / RAM / GPU |
+
+
+Hover and it expands into four cards — **System**, **Media**, **Local LLM**, **Packages** — always all four, so you get the full picture at a glance.
+
+---
+
+## Get it running
+
+**1. Install**
+
+```bash
+git clone https://github.com/<you>/plasma-dynamic-island.git
+cd plasma-dynamic-island
+make install
 ```
-plasma-dynamic-island/
-├── dynamic-island/                 # Plasma applet package
-│   ├── metadata.json               # Plugin id: com.arvin.dynamicisland
-│   └── contents/ui/main.qml        # UI + media/window logic
-├── scripts/
-│   └── di-pacman-monitor.sh        # Background status / media cache writer
-├── Makefile                        # install / reload helpers
-├── README.md
-└── LICENSE
-```
 
-**Source of truth** is this repo. Plasma loads the installed copy under:
+**2. Add it to your panel**
 
-`~/.local/share/plasma/plasmoids/com.arvin.dynamicisland/`
+- Right-click the panel → **Add Widgets**
+- Search **Dynamic Island**
+- Drag it onto the panel
 
-After edits, run `make install` (and usually `make plasma`) so the live widget updates.
+That's it. If it doesn't show up in the list immediately, run `make plasma` or log out and back in.
+
+> **Before you start**, you need Plasma 6 with `kpackagetool6` and `python3` — both come with a standard Plasma / Manjaro install. See [Requirements](#requirements) for the optional extras.
+
+---
+
+## Using it
+
+Hover to expand. Each card is clickable:
+
+
+| Card          | Click opens                             |
+| ------------- | --------------------------------------- |
+| **System**    | A terminal running `htop` (or `top`)    |
+| **Media**     | The app that's playing                  |
+| **Local LLM** | The active runner — LM Studio or Ollama |
+| **Packages**  | The terminal running the install        |
+
+
+**Pick what the panel shows.** By default the label follows a priority — Packages → Media → LLM → System — so the most active thing wins. Click the green dot on any card to pin it there instead.
+
+---
 
 ## Requirements
 
-- KDE Plasma 6 (Wayland recommended)
-- `playerctl` (optional fallback for the bash monitor)
+**Required** — you almost certainly already have these on Plasma:
 
-```bash
-sudo pacman -S playerctl
+
+| Component                      | Package (Arch / Manjaro)              |
+| ------------------------------ | ------------------------------------- |
+| KDE Plasma 6 + `kpackagetool6` | `plasma-desktop` / `plasma-workspace` |
+| Python 3                       | `python`                              |
+
+
+**Optional** — each one just unlocks more detail; skip any you don't want:
+
+
+| Component                                                         | Enables                            |
+| ----------------------------------------------------------------- | ---------------------------------- |
+| `playerctl`                                                       | Media title / artist / source      |
+| `gputop`                                                          | Intel / Xe GPU utilization         |
+| `nvidia-smi`                                                      | NVIDIA GPU utilization             |
+| `kdotool`                                                         | Stronger click-to-focus on Wayland |
+| [LM Studio](https://lmstudio.ai/) / [Ollama](https://ollama.com/) | The Local LLM card                 |
+
+
+Run `make check` anytime to confirm the required pieces are present.
+
+---
+
+## How it works
+
+Two parts: the widget draws the UI, and a small background script feeds it data (~3 updates/sec) through cache files.
+
+```
+com.arvin.dynamicisland          the panel widget + hover cards
+        ▲ reads
+~/.cache/dynamic-island-{sys,media,install,llm}.json
+        ▲ writes
+di-v13-collector.sh              runs in the background, also on login
 ```
 
-## Install
 
-```bash
-git clone https://github.com/YOUR_USERNAME/plasma-dynamic-island.git
-cd plasma-dynamic-island
-make install
-make plasma
-```
+| Path                          | Role                                        |
+| ----------------------------- | ------------------------------------------- |
+| `dynamic-island/`             | The Plasma plasmoid (QML + metadata)        |
+| `scripts/di-v13-collector.sh` | Polls system, media, package, and LLM state |
+| `scripts/di-activate-pid.sh`  | Focuses a window by PID (KWin / `kdotool`)  |
 
-Then add **Dynamic Island Widget** to a panel (or desktop) from Plasma’s “Add Widgets” dialog.
 
-### Make targets
+`make install` handles all of this — registering the widget, starting the collector, adding a login autostart entry, and reloading Plasma.
 
-| Target | What it does |
-|--------|----------------|
-| `make install` | Install plasmoid + scripts |
-| `make install-plasmoid` | Install applet only |
-| `make install-scripts` | Install scripts only |
-| `make plasma` | Restart plasmashell in the background |
-| `make uninstall` | Remove installed plasmoid + scripts |
-| `make print-paths` | Show resolved install paths |
-| `make help` | List targets and variables |
+---
 
-### Configurable paths
+## Commands
 
-Defaults:
 
-- Plasmoid: `~/.local/share/plasma/plasmoids/com.arvin.dynamicisland`
-- Scripts: `~/.local/share/plasma-dynamic-island/scripts`
+| Command          | What it does                                                            |
+| ---------------- | ----------------------------------------------------------------------- |
+| `make install`   | Install / upgrade, start the collector, enable autostart, reload Plasma |
+| `make uninstall` | Remove the widget, scripts, and autostart entry                         |
+| `make plasma`    | Reload `plasmashell`                                                    |
+| `make check`     | Verify required tools are installed                                     |
 
-Override as needed:
 
-```bash
-make install INSTALL_DIR=/custom/path/com.arvin.dynamicisland
-make install PREFIX=$HOME/.local
-make print-paths
-```
+---
 
-## Development workflow
+## Troubleshooting
 
-1. Edit files in this repo (usually `dynamic-island/contents/ui/main.qml`).
-2. Deploy and reload:
 
-```bash
-make install
-make plasma
-```
+| Symptom                     | Check                                                                                    |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| Not in the Add Widgets list | `kpackagetool6 -t Plasma/Applet -l | grep dynamicisland`, then `make plasma` or re-login |
+| Cards show no data          | `tail /tmp/di-v13-collector.log`, inspect `~/.cache/dynamic-island-*.json`               |
+| No GPU reading              | Install `gputop` (Intel / Xe) or confirm `nvidia-smi` works                              |
+| No tokens/sec               | Only shown while generating, with LM Studio's local server running                       |
+| Collector seems dead        | Check the PID in `~/.local/share/plasma-dynamic-island/collector.pid`                    |
 
-## Background monitor
 
-The QML widget reads status/media from cache files written by the bash monitor:
-
-- `~/.cache/dynamic-island-status.txt`
-- `~/.cache/dynamic-island-media.txt`
-
-After `make install`, run the installed script (or the repo copy) in a terminal or user service:
-
-```bash
-~/.local/share/plasma-dynamic-island/scripts/di-pacman-monitor.sh
-```
-
-Media still works from QML MPRIS without the monitor; package/system status needs the script.
-
-## Notes
-
-- Tested on Manjaro + Plasma 6 + Wayland
-- Arch/pacman-oriented system monitoring in the bash script
-- Not shipped as a `.plasmoid` archive yet — use `make install`
-- If status gets stuck, clear `~/.cache/dynamic-island-status.txt`
-
-## Author
-
-Arvin Adeli  
-CS @ University of Maryland
+---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+MIT © Arvin Adeli. See [LICENSE](LICENSE).
