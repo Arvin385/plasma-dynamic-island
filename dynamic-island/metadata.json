@@ -1,0 +1,17 @@
+{
+  "KPlugin": {
+    "Id": "com.arvin.dynamicisland",
+    "Name": "Dynamic Island Widget",
+    "Description": "Smart popup showing background task status",
+    "Version": "1.0",
+    "License": "GPL",
+    "Author": "Arvin",
+    "EnabledByDefault": true
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-EntryPoints": {
+    "Plasma/Applet": "contents/ui/main.qml"
+  },
+  "X-Plasma-FormFactors": ["panel","desktop"]
+}
