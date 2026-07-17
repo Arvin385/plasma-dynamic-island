@@ -30,7 +30,7 @@ Hover and it expands into four cards — **System**, **Media**, **Local LLM**, *
 **1. Install**
 
 ```bash
-git clone https://github.com/<you>/plasma-dynamic-island.git
+git clone https://github.com/Arvin385/plasma-dynamic-island.git
 cd plasma-dynamic-island
 make install
 ```
