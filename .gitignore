@@ -9,3 +9,6 @@
 # Local runtime noise
 *.pid
 *.log
+
+.docs/
+AGENTS.md
