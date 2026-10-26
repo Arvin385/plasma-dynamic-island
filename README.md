@@ -4,6 +4,17 @@ A Dynamic Island for the **KDE Plasma 6** panel. One small widget sits in your b
 
 > Works on Wayland, built and tested on Arch / Manjaro with Plasma 6.
 
+
+<img width="284" height="80" alt="image" src="https://github.com/user-attachments/assets/5e370a0f-db6c-4c1d-bd86-57cfbc6eb04b" />
+
+<img width="645" height="85" alt="image" src="https://github.com/user-attachments/assets/f2643de7-3e7a-440e-8e78-95d111641664" />
+
+<img width="407" height="85" alt="image" src="https://github.com/user-attachments/assets/becc30f1-4749-4399-a52d-4dfa72e30ba4" />
+
+<img width="422" height="101" alt="image" src="https://github.com/user-attachments/assets/f18d8d3c-8fc2-48d2-b21a-d04453ae608c" />
+
+<img width="947" height="932" alt="image" src="https://github.com/user-attachments/assets/c8366da9-6a4e-4c1e-8d81-0069441a804f" />
+
 ---
 
 ## The idea
