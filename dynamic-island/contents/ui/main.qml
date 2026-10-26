@@ -25,7 +25,18 @@ PlasmoidItem {
     property int maxWidth: 650
     property int fixedHeight: 48
     property string uiFont: "Adwaita Sans, Source Sans 3, Noto Sans, sans-serif"
-    property string idleGreeting: "Hello, Arvin!"
+    // Idle greeting name: the Settings page value first, then the collector's
+    // user_name (sourced from ~/.config/dynamic-island.env), then a generic fallback.
+    readonly property string displayName: {
+        var fromSettings = String(Plasmoid.configuration.userName || "").trim()
+        if (fromSettings !== "")
+            return fromSettings
+        var fromEnv = String((sysData && sysData.user_name) || "").trim()
+        if (fromEnv !== "")
+            return fromEnv
+        return "there"
+    }
+    readonly property string idleGreeting: "Hello, " + displayName + "!"
     property int playerPid: 0
 
     property real animatedWidth: 200

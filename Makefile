@@ -34,6 +34,10 @@ install: check
 	install -m 755 scripts/di-activate-pid.sh "$(BIN_DIR)/di-activate-pid.sh"
 	install -m 644 data/plasma-dynamic-island-autostart.desktop \
 		"$(HOME)/.config/autostart/plasma-dynamic-island-collector.desktop"
+	@# Seed the greeting-name env file; never clobber an existing user-edited copy
+	@if [ -f .env ] && [ ! -f "$(HOME)/.config/dynamic-island.env" ]; then \
+		install -m 644 .env "$(HOME)/.config/dynamic-island.env"; \
+	fi
 	@# Kill existing collectors via pidfile / exact argv (avoid pkill -f matching this shell)
 	@if [ -f "$(SHARE_DIR)/collector.pid" ]; then \
 		kill "$$(cat "$(SHARE_DIR)/collector.pid")" 2>/dev/null || true; \

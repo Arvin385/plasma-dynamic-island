@@ -11,6 +11,9 @@ MEDIA_JSON="$CACHE_DIR/dynamic-island-media.json"
 INSTALL_JSON="$CACHE_DIR/dynamic-island-install.json"
 LLM_JSON="$CACHE_DIR/dynamic-island-llm.json"
 
+# Optional user-provided name for the idle greeting (seeded by `make install`).
+ENV_FILE="${ORIG_HOME}/.config/dynamic-island.env"
+
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$ORIG_UID}"
 export HOME="$ORIG_HOME"
 export USER="$ORIG_USER"
@@ -35,6 +38,22 @@ write_json() {
     printf '%s\n' "$body" > "$tmp"
     mv -f "$tmp" "$path"
     chmod 644 "$path" 2>/dev/null || true
+}
+
+# Parse DI_USER_NAME from the env file. Grep-parsed, never sourced, so a
+# malformed .env cannot alter the collector loop's behavior.
+read_user_name() {
+    local raw=""
+    if [[ -f "$ENV_FILE" ]]; then
+        raw=$(grep -E '^[[:space:]]*(export[[:space:]]+)?DI_USER_NAME[[:space:]]*=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)
+        raw=${raw#'"'}
+        raw=${raw%'"'}
+        raw=${raw#"'"}
+        raw=${raw%"'"}
+        raw="${raw#"${raw%%[![:space:]]*}"}"
+        raw="${raw%"${raw##*[![:space:]]}"}"
+    fi
+    printf '%s' "$raw"
 }
 
 # ─── CPU / RAM / GPU ───────────────────────────────────────────────────────
@@ -178,7 +197,9 @@ collect_sys() {
         gpus=$(read_gpus)
         printf '%s|%s\n' "$now" "$gpus" > "$gpu_cache"
     fi
-    write_json "$SYS_JSON" "{\"cpu\":$cpu,\"ram\":$ram,\"gpus\":$gpus}"
+    local user_name
+    user_name=$(read_user_name)
+    write_json "$SYS_JSON" "{\"cpu\":$cpu,\"ram\":$ram,\"gpus\":$gpus,\"user_name\":$(json_escape "$user_name")}"
 }
 
 # ─── Media + speaker ───────────────────────────────────────────────────────

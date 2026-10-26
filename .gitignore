@@ -10,5 +10,8 @@
 *.pid
 *.log
 
+# Personal greeting name — local only, never committed
+.env
+
 .docs/
 AGENTS.md
