@@ -13,7 +13,7 @@ A Dynamic Island for the **KDE Plasma 6** panel. One small widget sits in your b
 
 <img width="422" height="101" alt="image" src="https://github.com/user-attachments/assets/f18d8d3c-8fc2-48d2-b21a-d04453ae608c" />
 
-<img width="947" height="932" alt="image" src="https://github.com/user-attachments/assets/c8366da9-6a4e-4c1e-8d81-0069441a804f" />
+<img width="447" height="432" alt="image" src="https://github.com/user-attachments/assets/c8366da9-6a4e-4c1e-8d81-0069441a804f" />
 
 ---
 
