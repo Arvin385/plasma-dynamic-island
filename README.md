@@ -2,8 +2,6 @@
 
 A Dynamic Island for the **KDE Plasma 6** panel. One small widget sits in your bar and shows whatever is happening right now — a download, a song, a local AI model, your system load. Hover it to open a stack of cards. Click a card to jump straight to that thing.
 
-version plasma license
-
 > Works on Wayland, built and tested on Arch / Manjaro with Plasma 6.
 
 ---

@@ -15,7 +15,8 @@ Item {
     readonly property bool dimmed: modeId !== "system" && !active
 
     visible: true
-    height: card.implicitHeight
+    implicitHeight: card.implicitHeight
+    height: implicitHeight
     width: parent ? parent.width : 400
     opacity: 1
     clip: true

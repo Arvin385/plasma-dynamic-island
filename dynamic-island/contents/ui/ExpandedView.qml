@@ -5,7 +5,8 @@ Item {
     property var islandRoot
 
     implicitWidth: 410
-    implicitHeight: stack.implicitHeight + 26
+    // 24px of headroom above the top card for the floating minimize button
+    implicitHeight: stack.implicitHeight + 24
     width: implicitWidth
     height: implicitHeight
 
@@ -40,12 +41,13 @@ Item {
         }
     }
 
+    // Bottom-anchored: the stack hugs the widget pill; the container's top
+    // floats just above the first card (headroom for the minimize button).
     Column {
         id: stack
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.topMargin: 22
+        anchors.bottom: parent.bottom
         spacing: 6
 
         AppletCard {
@@ -54,7 +56,7 @@ Item {
             modeId: "system"
             title: "System"
             alwaysShow: true
-            cardColor: "#1E4D6B"
+            cardColor: ModeColors.cardColor("system")
             contentComponent: systemBody
         }
         AppletCard {
@@ -64,7 +66,7 @@ Item {
             title: "Media"
             alwaysShow: true
             active: islandRoot && islandRoot.mediaModeActive
-            cardColor: "#5B2A7A"
+            cardColor: ModeColors.cardColor("media")
             contentComponent: mediaBody
         }
         AppletCard {
@@ -74,7 +76,7 @@ Item {
             title: "Local LLM"
             alwaysShow: true
             active: islandRoot && islandRoot.llmModeActive
-            cardColor: "#0D5C56"
+            cardColor: ModeColors.cardColor("llm")
             contentComponent: llmBody
         }
         AppletCard {
@@ -84,13 +86,11 @@ Item {
             title: "Packages"
             alwaysShow: true
             active: islandRoot && islandRoot.installModeActive
-            cardColor: {
-                if (!islandRoot || !islandRoot.installModeActive) return "#1E4A7A"
-                var a = String((islandRoot.installData && islandRoot.installData.action) || "")
-                if (a.indexOf("remov") >= 0 || a.indexOf("uninstall") >= 0) return "#7A2A2A"
-                if (a.indexOf("installed") >= 0 || a.indexOf("removed") >= 0) return "#2A6B45"
-                return "#1E4A7A"
-            }
+            cardColor: ModeColors.cardColor(
+                "install",
+                islandRoot && islandRoot.installModeActive,
+                String((islandRoot && islandRoot.installData && islandRoot.installData.action) || "")
+            )
             contentComponent: installBody
         }
     }

@@ -23,7 +23,7 @@ if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "/run/user/$ORIG_UID/bus" ]]; the
 fi
 
 json_escape() {
-    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[:-1] if False else sys.argv[1]))' "$1" 2>/dev/null \
+    python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null \
         || printf '"%s"' "${1//\"/\\\"}"
 }
 
@@ -284,8 +284,11 @@ collect_install() {
 
     if [[ "$action" != "none" && "$pid" -gt 0 ]]; then
         term=$(find_terminal_pid "$pid")
-        # Persist last live install for completed grace
-        printf '%s\n' "$action|$pkg|$cmd|$pid|$term|0" > "$CACHE_DIR/dynamic-island-install-last.txt"
+        # Persist last live install for completed grace.
+        # NOTE: `cmd` must stay the LAST field — it can contain `|`, and `read`
+        # assigns the whole remainder (delimiters included) to the last variable,
+        # keeping the numeric fields before it correctly split.
+        printf '%s\n' "$action|$pkg|$pid|$term|0|$cmd" > "$CACHE_DIR/dynamic-island-install-last.txt"
         write_json "$INSTALL_JSON" "$(
 DI_ACTION="$action" DI_PKG="$pkg" DI_CMD="$cmd" DI_PID="$pid" DI_TERM="$term" python3 - <<'PY'
 import json, os
@@ -305,7 +308,7 @@ PY
     # Completed grace from last live record
     if [[ -f "$CACHE_DIR/dynamic-island-install-last.txt" ]]; then
         local la="" lp="" lc="" lpid=0 lterm=0 ldone=0
-        IFS='|' read -r la lp lc lpid lterm ldone < "$CACHE_DIR/dynamic-island-install-last.txt" || true
+        IFS='|' read -r la lp lpid lterm ldone lc < "$CACHE_DIR/dynamic-island-install-last.txt" || true
         if [[ -n "${la:-}" && "$la" != "none" ]]; then
             local now
             now=$(date +%s)
@@ -313,7 +316,7 @@ PY
                 # Just finished — stamp completed_at
                 if [[ "$la" == "installing" ]]; then la="installed"; fi
                 if [[ "$la" == "removing" ]]; then la="removed"; fi
-                printf '%s\n' "$la|$lp|$lc|$lpid|$lterm|$now" > "$CACHE_DIR/dynamic-island-install-last.txt"
+                printf '%s\n' "$la|$lp|$lpid|$lterm|$now|$lc" > "$CACHE_DIR/dynamic-island-install-last.txt"
                 ldone=$now
             fi
             if (( now - ldone <= 5 )); then

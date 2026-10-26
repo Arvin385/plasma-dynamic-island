@@ -29,7 +29,7 @@ install: check
 		kpackagetool6 -t Plasma/Applet -i "$(CURDIR)/$(SRC)"; \
 	fi
 	mkdir -p "$(SHARE_DIR)/scripts" "$(BIN_DIR)" "$(HOME)/.config/autostart"
-	# v1.3 collector only — do not ship legacy di-pacman-monitor.sh
+	# v1.3 collector only — the legacy collector is not shipped
 	install -m 755 scripts/di-v13-collector.sh "$(SHARE_DIR)/scripts/di-v13-collector.sh"
 	install -m 755 scripts/di-activate-pid.sh "$(BIN_DIR)/di-activate-pid.sh"
 	install -m 644 data/plasma-dynamic-island-autostart.desktop \
